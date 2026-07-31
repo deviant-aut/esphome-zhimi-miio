@@ -5,7 +5,42 @@ protocol** instead of MIoT — the ones tagged `miio2miot` on
 [Xiaomi MIoT Spec](https://home.miot-spec.com/), where the serial bus shows
 messages like `props power "on"`.
 
-Developed and verified on a **Smartmi Standing Fan 2 (`zhimi.fan.za3`)**.
+## Tested devices
+
+| Device | Model | Status | UART pins | Notes |
+|---|---|---|---|---|
+| Smartmi Standing Fan 2 | [`zhimi.fan.za3`](https://home.miot-spec.com/spec/zhimi.fan.za3) | ✅ verified on hardware | `TX GPIO17` / `RX GPIO16` | Full feature set. Wiring and teardown photos in [dhewg/esphome-miot#85](https://github.com/dhewg/esphome-miot/issues/85). |
+
+Other `miio2miot` devices should work with the hub — the transport is the same
+for all of them — but the command set differs per model and none have been
+tested. If you get one running, a PR adding it to this table is welcome.
+
+## Hardware
+
+The stock Xiaomi WiFi module has to be replaced with an ESP32. **Once that is
+done there is no way back to the original firmware**, which is what makes a
+working component necessary rather than optional.
+
+For the `zhimi.fan.za3`, the module pinout, soldering photos and the UART pins
+are documented in the upstream issue:
+
+- [Teardown and soldering photos](https://github.com/dhewg/esphome-miot/issues/85#issuecomment-3383123413)
+- [UART pins and baud rate](https://github.com/dhewg/esphome-miot/issues/85#issuecomment-3383231641)
+
+The ESP32 board also needs these options, because the replacement modules ship
+without a valid eFuse MAC CRC:
+
+```yaml
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_FREERTOS_UNICORE: y
+    advanced:
+      ignore_efuse_custom_mac: true
+      ignore_efuse_mac_crc: true
+```
 
 ## Why this exists
 
@@ -64,10 +99,10 @@ external_components:
 Then see [`zhimi.fan.za3.yaml`](zhimi.fan.za3.yaml) for a complete
 configuration, and copy `secrets.yaml.example` to `secrets.yaml`.
 
-> **Check your UART pins.** The example uses GPIO17/GPIO16, which is what the
-> ESP32 replacement module on the tested fan was wired to. Yours may differ.
-> Set `logger: baud_rate: 0` — the MCU owns UART0 and logging to it corrupts
-> the protocol.
+> **Check your UART pins** against the [tested devices](#tested-devices) table
+> and the wiring photos linked under [Hardware](#hardware). Also set
+> `logger: baud_rate: 0` — the MCU owns UART0 and logging to it corrupts the
+> protocol.
 
 ## Configuration
 
@@ -133,8 +168,9 @@ presses. See [docs/PROTOCOL.md](docs/PROTOCOL.md#physical-buttons).
 
 ## Status
 
-Verified on `zhimi.fan.za3` hardware: power, stepless speed, gear 1–4, natural
-wind, oscillation and angle, physical key events, and the double-press toggle.
+Verified on `zhimi.fan.za3` hardware (see [Tested devices](#tested-devices)):
+power, stepless speed, gear 1–4, natural wind, oscillation and angle, physical
+key events, and the double-press toggle.
 
 Known gaps:
 
@@ -144,8 +180,6 @@ Known gaps:
   report, so those entities are optimistic or unknown until first set.
 - The AP fallback path is reasoned from the ESPHome sources, not measured — the
   test would have meant flashing a config with an unreachable SSID.
-- Other `miio2miot` devices should work with the hub, but only this fan was
-  tested. Command sets differ per model.
 
 ## License
 
