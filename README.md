@@ -17,8 +17,13 @@ tested. If you get one running, a PR adding it to this table is welcome.
 
 ## Hardware
 
-The stock Xiaomi WiFi module has to be replaced with an ESP32. **Once that is
-done there is no way back to the original firmware**, which is what makes a
+The WiFi module in these devices **already is an ESP32** — it is not replaced,
+it gets flashed with ESPHome. The module talks to the fan's own MCU over UART,
+and that MCU is what speaks the protocol described here; it keeps running the
+Xiaomi firmware and handles the physical keys on its own.
+
+Flashing needs a serial adapter soldered to the module's pads. **Unless you dump
+the stock firmware first, this is a one-way trip** — which is what makes a
 working component necessary rather than optional.
 
 For the `zhimi.fan.za3`, the module pinout, soldering photos and the UART pins
@@ -27,8 +32,8 @@ are documented in the upstream issue:
 - [Teardown and soldering photos](https://github.com/dhewg/esphome-miot/issues/85#issuecomment-3383123413)
 - [UART pins and baud rate](https://github.com/dhewg/esphome-miot/issues/85#issuecomment-3383231641)
 
-The ESP32 board also needs these options, because the replacement modules ship
-without a valid eFuse MAC CRC:
+The board config needs these options, because Xiaomi's ESP32 modules do not
+carry a valid eFuse MAC CRC:
 
 ```yaml
 esp32:
@@ -49,9 +54,9 @@ use for Xiaomi devices — but it speaks MIoT (`set_properties <siid> <piid>
 <value>`). Devices like the `zhimi.fan.za3` answer every MIoT command with
 `error "method not found" -5000`, which its README documents as unsupported.
 
-Once the original WiFi module is replaced with an ESP32, there is no way back to
-the stock firmware, so the remaining option is to speak the old protocol. That
-is what this component does.
+Once the module has been flashed with ESPHome, going back to the stock firmware
+is not usually an option, so the remaining path is to speak the old protocol.
+That is what this component does.
 
 The protocol was reverse engineered on the device; the full write-up is in
 [docs/PROTOCOL.md](docs/PROTOCOL.md).

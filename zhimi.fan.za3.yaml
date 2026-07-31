@@ -1,10 +1,11 @@
 # Smartmi Standing Fan 2 / zhimi.fan.za3
 #
-# Replace the ESP32 board section if your hardware differs, and put your own
-# credentials into secrets.yaml (see secrets.yaml.example).
+# This is flashed onto the device's own Xiaomi ESP32 WiFi module, which then
+# talks to the fan's MCU over UART. Put your own credentials into secrets.yaml
+# (see secrets.yaml.example).
 #
-# The UART pins below are the ones found on the original Xiaomi WiFi module of
-# the zhimi.fan.za3. Verify them for your own device before flashing.
+# The UART pins below are the ones used on the zhimi.fan.za3 module. Verify
+# them for your own device before flashing.
 
 external_components:
   - source:
@@ -23,7 +24,7 @@ esp32:
     sdkconfig_options:
       CONFIG_FREERTOS_UNICORE: y
     advanced:
-      # the stock module ships without a valid eFuse MAC CRC
+      # Xiaomi's ESP32 modules carry no valid eFuse MAC CRC
       ignore_efuse_custom_mac: true
       ignore_efuse_mac_crc: true
 
