@@ -1,0 +1,295 @@
+# Smartmi Standing Fan 2 / zhimi.fan.za3
+#
+# Replace the ESP32 board section if your hardware differs, and put your own
+# credentials into secrets.yaml (see secrets.yaml.example).
+#
+# The UART pins below are the ones found on the original Xiaomi WiFi module of
+# the zhimi.fan.za3. Verify them for your own device before flashing.
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+esphome:
+  name: smartmi-fan-2
+  friendly_name: Smartmi Fan 2
+  comment: Smartmi Standing Fan 2 (zhimi.fan.za3), legacy miio UART
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_FREERTOS_UNICORE: y
+    advanced:
+      # the stock module ships without a valid eFuse MAC CRC
+      ignore_efuse_custom_mac: true
+      ignore_efuse_mac_crc: true
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+  # do not reboot when Home Assistant is unreachable - the fan stays usable
+  reboot_timeout: 0s
+  services:
+    # send a raw command to the MCU, e.g. 'set_angle 120'
+    - service: mcu_command
+      variables:
+        command: string
+      then:
+        - lambda: 'id(fan_hub).queue_command(command);'
+    # ask the MCU to re-announce all properties
+    - service: refresh
+      then:
+        - lambda: 'id(fan_hub).request_refresh();'
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# after 5 boots without 1 minute of uptime the ESP comes up in a WiFi+OTA only
+# mode instead of becoming a soldering job
+safe_mode:
+  num_attempts: 5
+  boot_is_good_after: 1min
+  reboot_timeout: 15min
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+
+  # Without a reachable network the ESP brings up its own access point after
+  # 60s, so the fan stays controllable from a phone at http://192.168.4.1/.
+  # Configuring an AP also disables ESPHome's WiFi reboot timer, which keeps
+  # the node stable while offline.
+  ap:
+    ssid: "Smartmi Fan Fallback Hotspot"
+    password: !secret ap_password
+    ap_timeout: 60s
+
+captive_portal:
+
+web_server:
+  port: 80
+  auth:
+    username: admin
+    password: !secret web_password
+
+logger:
+  level: DEBUG
+  # Important: the MCU owns UART0, logging to it corrupts the protocol
+  baud_rate: 0
+
+# The MCU asks for the wall clock time (used by its off timer). Optional.
+time:
+  - platform: homeassistant
+    id: ha_time
+
+uart:
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 115200
+
+globals:
+  - id: last_angle_press
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+zhimi_miio:
+  id: fan_hub
+
+  # The MCU reports every physical key press as props button_pressed "<key>".
+  # A long press cannot be told apart from a short one - the message and the
+  # effect are identical - but a double press can.
+  #
+  # Double press on the oscillation key toggles the wind mode. The two
+  # oscillation toggles cancel each other out, so the swing ends up where it
+  # was. This runs entirely on the ESP, no Home Assistant and no network
+  # required.
+  on_button_press:
+    - lambda: |-
+        if (x != "angle")
+          return;
+
+        const uint32_t now = millis();
+        const uint32_t previous = id(last_angle_press);
+        id(last_angle_press) = now;
+
+        if (previous == 0 || now - previous >= 900)
+          return;
+
+        id(last_angle_press) = 0;  // consumed, a third press starts over
+
+        int natural = id(fan_hub).get_number("natural_level", 0);
+        if (natural > 0) {
+          ESP_LOGI("zhimi_miio", "Double press: Natural -> Straight Wind");
+          id(fan_hub).set_straight_level(natural);
+        } else {
+          int level = id(fan_hub).get_number("speed_level", 0);
+          ESP_LOGI("zhimi_miio", "Double press: Straight -> Natural Wind");
+          id(fan_hub).set_natural_level(level > 0 ? level : 50);
+        }
+
+fan:
+  - platform: zhimi_miio
+    id: fan_main
+    name: "Fan"
+    icon: mdi:fan
+
+switch:
+  - platform: template
+    id: sw_natural
+    name: "Natural Wind"
+    icon: mdi:weather-windy
+    lambda: 'return id(fan_hub).get_number("natural_level", 0) > 0;'
+    turn_on_action:
+      - lambda: |-
+          // natural wind takes over the level of the straight wind mode
+          int level = id(fan_hub).get_number("speed_level", 0);
+          id(fan_hub).set_natural_level(level > 0 ? level : 50);
+    turn_off_action:
+      - lambda: 'id(fan_hub).set_natural_level(0);'
+
+  # child_lock, buzzer and led_b are never reported back by the MCU,
+  # so these entities are optimistic
+  - platform: template
+    name: "Child Lock"
+    icon: mdi:lock
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: 'id(fan_hub).set_string_prop("child_lock", "on");'
+    turn_off_action:
+      - lambda: 'id(fan_hub).set_string_prop("child_lock", "off");'
+
+  - platform: template
+    name: "Notification Sounds"
+    icon: mdi:volume-high
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: 'id(fan_hub).set_number_prop("buzzer", 1);'
+    turn_off_action:
+      - lambda: 'id(fan_hub).set_number_prop("buzzer", 0);'
+
+number:
+  - platform: template
+    id: nr_fan_level
+    name: "Fan Level"
+    icon: mdi:fan-chevron-up
+    update_interval: 2s
+    min_value: 1
+    max_value: 4
+    step: 1
+    lambda: |-
+      int level = id(fan_hub).get_number("fan_level", 0);
+      if (level < 1)
+        return {};
+      return (float) level;
+    set_action:
+      - lambda: 'id(fan_hub).set_number_prop("fan_level", (int) x);'
+
+  - platform: template
+    name: "Off Delay"
+    icon: mdi:clock-outline
+    entity_category: config
+    unit_of_measurement: min
+    device_class: duration
+    update_interval: 2s
+    min_value: 0
+    max_value: 480
+    step: 1
+    # NOTE: the seconds unit of poweroff_time is assumed, not verified - the
+    # MCU does not report the value back on a refresh, so no countdown could
+    # be observed.
+    lambda: 'return id(fan_hub).get_number("poweroff_time", 0) / 60.0f;'
+    set_action:
+      - lambda: 'id(fan_hub).set_number_prop("poweroff_time", (int) (x * 60));'
+
+select:
+  - platform: template
+    name: "Oscillation Angle"
+    icon: mdi:angle-obtuse
+    update_interval: 2s
+    options: ["30", "60", "90", "120"]
+    # angle is not part of the periodic report, so it stays unknown until set
+    lambda: |-
+      if (!id(fan_hub).has_prop("angle"))
+        return {};
+      return id(fan_hub).get_string("angle");
+    set_action:
+      - lambda: 'id(fan_hub).set_number_prop("angle", atoi(x.c_str()));'
+
+  - platform: template
+    name: "LED Brightness"
+    icon: mdi:brightness-6
+    entity_category: config
+    optimistic: true
+    options: ["Bright", "Dim", "Off"]
+    initial_option: "Bright"
+    set_action:
+      - lambda: |-
+          // led_b: 0 = bright, 1 = dim, 2 = off
+          int brightness = 0;
+          if (x == "Dim")
+            brightness = 1;
+          else if (x == "Off")
+            brightness = 2;
+          id(fan_hub).set_number_prop("led_b", brightness);
+
+button:
+  # same wind mode toggle as the double press, for hold_action on a dashboard
+  - platform: template
+    id: btn_toggle_mode
+    name: "Toggle Wind Mode"
+    icon: mdi:weather-windy
+    on_press:
+      - lambda: |-
+          int natural = id(fan_hub).get_number("natural_level", 0);
+          if (natural > 0) {
+            id(fan_hub).set_straight_level(natural);
+          } else {
+            int level = id(fan_hub).get_number("speed_level", 0);
+            id(fan_hub).set_natural_level(level > 0 ? level : 50);
+          }
+
+  # set_move only works while oscillation is off, otherwise the MCU
+  # answers with -6007 device_busy
+  - platform: template
+    name: "Turn Left"
+    icon: mdi:pan-left
+    on_press:
+      - lambda: 'id(fan_hub).set_string_prop("move", "left");'
+
+  - platform: template
+    name: "Turn Right"
+    icon: mdi:pan-right
+    on_press:
+      - lambda: 'id(fan_hub).set_string_prop("move", "right");'
+
+  - platform: template
+    name: "Refresh from MCU"
+    icon: mdi:refresh
+    entity_category: diagnostic
+    on_press:
+      - lambda: 'id(fan_hub).request_refresh();'
+
+text_sensor:
+  - platform: template
+    name: "MCU Properties"
+    icon: mdi:code-braces
+    entity_category: diagnostic
+    update_interval: 2s
+    lambda: 'return id(fan_hub).props_summary();'
+
+  - platform: template
+    name: "MCU Version"
+    icon: mdi:chip
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: 'return id(fan_hub).get_mcu_version();'
