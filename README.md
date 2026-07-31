@@ -80,7 +80,7 @@ Everything above the transport is different: name-based properties instead of
 |---|---|---|
 | Addressing | numeric `siid` / `piid` | property names as plain text |
 | Write | `set_properties 2 1 1` | `set_power "on"` |
-| Read | `get_properties ...`, polled | none — the MCU pushes `props` |
+| Read | `get_properties <siid> <piid> ...` | `get_prop "name","name",...` |
 | Arguments | positional numbers | strings quoted, numbers bare |
 
 ## Installation
@@ -121,12 +121,21 @@ uart:
 
 zhimi_miio:
   id: fan_hub
+  poll_interval: 10s
+  poll_properties: [power, mode, speed_level, natural_level, angle]
   on_button_press:
     - lambda: 'ESP_LOGI("app", "physical key: %s", x.c_str());'
 ```
 
+Polling is what makes the state real. The MCU pushes only five properties on
+its own; everything else — including the wind mode itself — has to be read back
+with `get_prop`. Probing a new device is easy because unsupported property
+names answer `"null"` instead of failing.
+
 | Option | Description |
 |---|---|
+| `poll_properties` | Property names to read back with `get_prop`. Empty (default) disables polling. |
+| `poll_interval` | How often to poll. Default `10s`. |
 | `on_button_press` | Fires when the MCU reports a physical key press. `x` is the key name, e.g. `"speed"` or `"angle"`. |
 | `ota_net_indicator` | Network state reported to the MCU during an OTA update. Default `updating`. |
 
@@ -137,15 +146,14 @@ Methods available in lambdas:
 | `queue_command(cmd)` | Send a raw command, e.g. `set_angle 120`. |
 | `set_string_prop(prop, value)` | `set_<prop> "<value>"` |
 | `set_number_prop(prop, value)` | `set_<prop> <value>` |
-| `set_straight_level(n)` | Straight wind at `n`, keeps the cached state consistent. |
-| `set_natural_level(n)` | Natural wind at `n`, `0` for straight wind. |
-| `request_refresh()` | Make the MCU re-announce all properties. |
+| `set_mode(mode)` | Wind mode, `"natural"` or `"normal"`. Keeps the cached value in sync. |
+| `request_refresh()` | Poll all configured properties right now. |
 | `has_prop(name)` / `get_string(name)` / `get_number(name)` / `get_bool(name)` | Read cached state. |
 | `props_summary()` | All known properties, for a diagnostic text sensor. |
 
-Use `set_straight_level()` / `set_natural_level()` rather than writing
-`speed_level` / `natural_level` directly — the MCU does not report the implicit
-mode switch, so the cache has to be corrected locally.
+Use `set_mode()` rather than writing `natural_level` directly — it carries the
+current level over, and the MCU never echoes the mode back, so the cached value
+has to be updated locally.
 
 ### `fan` platform
 
@@ -159,14 +167,15 @@ On/off, stepless speed 1–100 and oscillation. While natural wind is active the
 speed is written to `natural_level`, otherwise to `speed_level`.
 
 Everything else (natural wind, gear 1–4, oscillation angle, child lock, buzzer,
-LED brightness, off delay) is done with standard `template` entities — see the
-example YAML.
+LED brightness, off delay, fan RPM, operating hours) is done with standard
+`template` entities reading from the polled state — see the example YAML.
 
 ## Switching wind mode without a network
 
 The MCU reports physical key presses, so multi-press detection can run entirely
-on the ESP. The example config toggles natural/straight wind on a **double press
-of the oscillation key**, which works with Home Assistant offline or WiFi down.
+on the ESP. The example config toggles between natural and normal wind on a
+**double press of the oscillation key**, which works with Home Assistant offline
+or WiFi down.
 
 A long press cannot be used: the MCU sends the same message for short and long
 presses. See [docs/PROTOCOL.md](docs/PROTOCOL.md#physical-buttons).
@@ -175,16 +184,15 @@ presses. See [docs/PROTOCOL.md](docs/PROTOCOL.md#physical-buttons).
 
 Verified on `zhimi.fan.za3` hardware (see [Tested devices](#tested-devices)):
 power, stepless speed, gear 1–4, natural wind, oscillation and angle, physical
-key events, and the double-press toggle.
+key events, the double-press toggle, and reading every property back including
+fan RPM and operating hours.
 
 Known gaps:
 
-- `set_poweroff_time` is assumed to take **seconds**. The MCU does not report
-  the value back on a refresh, so no countdown could be observed to confirm it.
-- `child_lock`, `buzzer`, `led_b` and `angle` are never part of the periodic
-  report, so those entities are optimistic or unknown until first set.
 - The AP fallback path is reasoned from the ESPHome sources, not measured — the
   test would have meant flashing a config with an unreachable SSID.
+- `get_prop` was tested with up to 14 properties in one request; where the
+  actual limit is was not established.
 
 ## License
 

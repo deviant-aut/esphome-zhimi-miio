@@ -6,6 +6,11 @@
 #
 # The UART pins below are the ones used on the zhimi.fan.za3 module. Verify
 # them for your own device before flashing.
+#
+# Protocol in short - strings are quoted, numbers are not:
+#   ESP -> MCU:  down set_power "on"          MCU -> ESP:  result "ok"
+#   ESP -> MCU:  down get_prop "power","mode" MCU -> ESP:  result "on","natural"
+#   MCU -> ESP:  props power "on" fan_level 1 ...   (pushed on change)
 
 external_components:
   - source:
@@ -40,7 +45,7 @@ api:
         command: string
       then:
         - lambda: 'id(fan_hub).queue_command(command);'
-    # ask the MCU to re-announce all properties
+    # poll all configured properties right now
     - service: refresh
       then:
         - lambda: 'id(fan_hub).request_refresh();'
@@ -102,6 +107,25 @@ globals:
 zhimi_miio:
   id: fan_hub
 
+  # get_prop reads any number of properties back at once. This is what gives
+  # angle, child_lock, buzzer, led_b and poweroff_time real state - the MCU
+  # never reports those on its own.
+  poll_interval: 10s
+  poll_properties:
+    - power
+    - mode
+    - fan_level
+    - speed_level
+    - natural_level
+    - angle
+    - angle_enable
+    - child_lock
+    - buzzer
+    - led_b
+    - poweroff_time
+    - speed
+    - use_time
+
   # The MCU reports every physical key press as props button_pressed "<key>".
   # A long press cannot be told apart from a short one - the message and the
   # effect are identical - but a double press can.
@@ -124,15 +148,10 @@ zhimi_miio:
 
         id(last_angle_press) = 0;  // consumed, a third press starts over
 
-        int natural = id(fan_hub).get_number("natural_level", 0);
-        if (natural > 0) {
-          ESP_LOGI("zhimi_miio", "Double press: Natural -> Straight Wind");
-          id(fan_hub).set_straight_level(natural);
-        } else {
-          int level = id(fan_hub).get_number("speed_level", 0);
-          ESP_LOGI("zhimi_miio", "Double press: Straight -> Natural Wind");
-          id(fan_hub).set_natural_level(level > 0 ? level : 50);
-        }
+        // set_mode carries the current level over by itself
+        bool natural = id(fan_hub).get_string("mode") == "natural";
+        ESP_LOGI("zhimi_miio", "Double press: %s", natural ? "natural -> normal" : "normal -> natural");
+        id(fan_hub).set_mode(natural ? "normal" : "natural");
 
 fan:
   - platform: zhimi_miio
@@ -145,23 +164,17 @@ switch:
     id: sw_natural
     name: "Natural Wind"
     icon: mdi:weather-windy
-    lambda: 'return id(fan_hub).get_number("natural_level", 0) > 0;'
+    lambda: 'return id(fan_hub).get_string("mode") == "natural";'
     turn_on_action:
-      - lambda: |-
-          // natural wind takes over the level of the straight wind mode
-          int level = id(fan_hub).get_number("speed_level", 0);
-          id(fan_hub).set_natural_level(level > 0 ? level : 50);
+      - lambda: 'id(fan_hub).set_mode("natural");'
     turn_off_action:
-      - lambda: 'id(fan_hub).set_natural_level(0);'
+      - lambda: 'id(fan_hub).set_mode("normal");'
 
-  # child_lock, buzzer and led_b are never reported back by the MCU,
-  # so these entities are optimistic
   - platform: template
     name: "Child Lock"
     icon: mdi:lock
     entity_category: config
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
+    lambda: 'return id(fan_hub).get_bool("child_lock");'
     turn_on_action:
       - lambda: 'id(fan_hub).set_string_prop("child_lock", "on");'
     turn_off_action:
@@ -171,8 +184,7 @@ switch:
     name: "Notification Sounds"
     icon: mdi:volume-high
     entity_category: config
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
+    lambda: 'return id(fan_hub).get_number("buzzer", 0) > 0;'
     turn_on_action:
       - lambda: 'id(fan_hub).set_number_prop("buzzer", 1);'
     turn_off_action:
@@ -205,9 +217,7 @@ number:
     min_value: 0
     max_value: 480
     step: 1
-    # NOTE: the seconds unit of poweroff_time is assumed, not verified - the
-    # MCU does not report the value back on a refresh, so no countdown could
-    # be observed.
+    # poweroff_time counts down in seconds (verified: 600 -> 499 in 105s)
     lambda: 'return id(fan_hub).get_number("poweroff_time", 0) / 60.0f;'
     set_action:
       - lambda: 'id(fan_hub).set_number_prop("poweroff_time", (int) (x * 60));'
@@ -218,7 +228,6 @@ select:
     icon: mdi:angle-obtuse
     update_interval: 2s
     options: ["30", "60", "90", "120"]
-    # angle is not part of the periodic report, so it stays unknown until set
     lambda: |-
       if (!id(fan_hub).has_prop("angle"))
         return {};
@@ -230,9 +239,15 @@ select:
     name: "LED Brightness"
     icon: mdi:brightness-6
     entity_category: config
-    optimistic: true
+    update_interval: 2s
     options: ["Bright", "Dim", "Off"]
-    initial_option: "Bright"
+    lambda: |-
+      switch (id(fan_hub).get_number("led_b", -1)) {
+        case 0: return std::string{"Bright"};
+        case 1: return std::string{"Dim"};
+        case 2: return std::string{"Off"};
+      }
+      return {};
     set_action:
       - lambda: |-
           // led_b: 0 = bright, 1 = dim, 2 = off
@@ -251,13 +266,8 @@ button:
     icon: mdi:weather-windy
     on_press:
       - lambda: |-
-          int natural = id(fan_hub).get_number("natural_level", 0);
-          if (natural > 0) {
-            id(fan_hub).set_straight_level(natural);
-          } else {
-            int level = id(fan_hub).get_number("speed_level", 0);
-            id(fan_hub).set_natural_level(level > 0 ? level : 50);
-          }
+          bool natural = id(fan_hub).get_string("mode") == "natural";
+          id(fan_hub).set_mode(natural ? "normal" : "natural");
 
   # set_move only works while oscillation is off, otherwise the MCU
   # answers with -6007 device_busy
@@ -279,6 +289,33 @@ button:
     entity_category: diagnostic
     on_press:
       - lambda: 'id(fan_hub).request_refresh();'
+
+sensor:
+  - platform: template
+    name: "Fan Speed"
+    icon: mdi:fan
+    unit_of_measurement: rpm
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 10s
+    lambda: |-
+      if (!id(fan_hub).has_prop("speed"))
+        return {};
+      return id(fan_hub).get_number("speed", 0);
+
+  - platform: template
+    name: "Use Time"
+    icon: mdi:timer-outline
+    unit_of_measurement: h
+    device_class: duration
+    state_class: total_increasing
+    accuracy_decimals: 1
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      if (!id(fan_hub).has_prop("use_time"))
+        return {};
+      return id(fan_hub).get_number("use_time", 0) / 3600.0f;
 
 text_sensor:
   - platform: template

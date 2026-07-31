@@ -60,16 +60,16 @@ class ZhimiMiio : public Component,
   /// set_<prop> <value>  (bare, for numeric properties like speed_level/angle)
   void set_number_prop(const std::string &prop, int value);
 
-  /* Wind mode. The MCU under-reports both of these: set_speed_level implicitly
-   * turns natural wind off and set_natural_level 0 switches back to straight
-   * wind, but neither change is echoed back as a natural_level property. Going
-   * through these two methods keeps the cached state in sync, otherwise e.g.
-   * the natural wind switch stays stuck on.
+  /* Wind mode, "natural" or "normal". set_mode carries the current level over,
+   * so no level has to be written along with it. The MCU does not echo the mode
+   * itself back (only the resulting natural_level), hence the local update.
    */
-  void set_straight_level(int level);
-  void set_natural_level(int level);
-  /// Make the MCU re-announce every property (net status transition triggers a full dump).
+  void set_mode(const std::string &mode);
+
+  /// Poll the MCU for the configured properties right now.
   void request_refresh();
+  void set_poll_interval(uint32_t interval) { this->poll_interval_ = interval; }
+  void set_poll_properties(const std::vector<std::string> &properties) { this->poll_properties_ = properties; }
 
   bool has_prop(const std::string &name) const { return this->props_.count(name) > 0; }
   std::string get_string(const std::string &name, const std::string &default_value = "") const;
@@ -92,8 +92,10 @@ class ZhimiMiio : public Component,
   void send_reply_(const char *reply);
   void process_message_();
   void parse_props_(char *p);
+  void parse_get_prop_result_(char *p);
   void set_local_prop_(const std::string &name, const std::string &value);
   void notify_listeners_();
+  void poll_();
   std::string get_printable_rx_message_();
 
   static const size_t MAX_LINE_LENGTH = 512;
@@ -103,6 +105,11 @@ class ZhimiMiio : public Component,
   uint32_t last_rx_char_timestamp_{0};
   const char *last_net_reply_{nullptr};
   bool props_dirty_{false};
+  bool expect_get_prop_result_{false};
+  bool poll_pending_{false};
+  uint32_t poll_interval_{0};
+  std::vector<std::string> poll_properties_;
+  std::string poll_command_;
   std::string pending_button_;
   CallbackManager<void(const std::string &)> button_press_callback_;
   std::string model_;

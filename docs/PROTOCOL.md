@@ -63,8 +63,9 @@ down get_properties 2 1 2 2 ...   ->  error "method not found" -5000
 | Command | Argument | Notes |
 |---|---|---|
 | `set_power` | `"on"` / `"off"` | |
+| `set_mode` | `"natural"` / `"normal"` | carries the current level over; `"straight"` gives `-5001` |
 | `set_speed_level` | `1..100` | stepless; **implicitly turns natural wind off** |
-| `set_natural_level` | `0..100` | `0` = straight wind, `>0` = natural wind at that level |
+| `set_natural_level` | `0..100` | `0` = normal wind, `>0` = natural wind at that level |
 | `set_fan_level` | `1..4` | gear; acts on whichever level is currently active |
 | `set_angle_enable` | `"on"` / `"off"` | oscillation |
 | `set_angle` | `30` / `60` / `90` / `120` | also enables oscillation |
@@ -72,27 +73,87 @@ down get_properties 2 1 2 2 ...   ->  error "method not found" -5000
 | `set_child_lock` | `"on"` / `"off"` | |
 | `set_buzzer` | `0` / `1` | numeric, `"on"` gives `-5001` |
 | `set_led_b` | `0` / `1` / `2` | bright / dim / off |
-| `set_poweroff_time` | seconds | unit assumed, not verified |
+| `set_poweroff_time` | seconds | counts down; verified 600 → 499 in 105 s |
 
-There is no working read command. `get_prop <name>` is accepted but never
-answers, `get_props` gives `-5000`.
+Every setter is rejected with `error "device_poweroff" -6011` while the device
+is switched off, so `set_power "on"` has to come first.
+
+## Reading properties
+
+`get_prop` works, and it obeys the same quoting rule as the setters — which is
+easy to miss, because the unquoted form does not fail, it just answers `null`:
+
+```
+down get_prop power                ->  result "null"
+down get_prop "power"              ->  result "off"
+down get_prop ["power"]            ->  result "null"
+down get_prop                      ->  error "method not found" -5000
+```
+
+Multiple properties are read in a single command **comma separated**. Space
+separation silently returns only the first value:
+
+```
+down get_prop "power" "speed_level"   ->  result "off"
+down get_prop "power","speed_level"   ->  result "off",49
+```
+
+Values come back in the requested order, strings quoted and numbers bare.
+Fourteen properties in one request worked without trouble:
+
+```
+down get_prop "power","mode","fan_level","speed_level","natural_level","angle",
+              "angle_enable","child_lock","buzzer","led_b","poweroff_time",
+              "ac_power","speed","use_time"
+->  result "on","normal",2,33,0,90,"off","off",0,1,0,"on",451,175940
+```
+
+### Readable properties
+
+| Property | Example | Notes |
+|---|---|---|
+| `power` | `"on"` | |
+| `mode` | `"natural"` / `"normal"` | the authoritative wind mode |
+| `fan_level` | `2` | gear 1–4 |
+| `speed_level` | `33` | normal wind level |
+| `natural_level` | `0` | natural wind level, `0` while in normal mode |
+| `angle` | `90` | |
+| `angle_enable` | `"off"` | |
+| `child_lock` | `"off"` | |
+| `buzzer` | `0` | |
+| `led_b` | `1` | |
+| `poweroff_time` | `0` | remaining seconds |
+| `speed` | `451` | **measured fan RPM** |
+| `use_time` | `175940` | total seconds of operation |
+| `ac_power` | `"on"` | |
+| `temp_dec`, `humidity`, `battery`, `bat_charge` | `"null"` | not present on this model |
+
+Unsupported names answer `"null"` rather than an error, which makes probing for
+a device's property set straightforward.
 
 ## Wind mode state machine
 
-Natural wind is active exactly while `natural_level > 0`. `speed_level` keeps
-the straight wind level independently.
+`mode` is the authoritative value, and `set_mode` is the clean way to switch —
+it carries the current level over, so no level has to be written along with it:
+
+```
+set_mode "natural"   ->  natural wind, natural_level takes over speed_level
+set_mode "normal"    ->  normal wind at speed_level, natural_level becomes 0
+```
+
+The level of whichever mode is active is written directly:
 
 ```
 set_natural_level 40   ->  natural wind at 40
-set_speed_level 60     ->  straight wind at 60, natural_level silently becomes 0
-set_natural_level 0    ->  straight wind at the previous speed_level
+set_speed_level 60     ->  normal wind at 60, natural_level silently becomes 0
+set_natural_level 0    ->  normal wind at the previous speed_level
 ```
 
-**Both implicit transitions are not reported back.** After `set_speed_level`
-the MCU echoes only `props speed_level 60 fan_level 3` — no `natural_level 0`.
-A cached copy of the state has to be corrected locally or a "natural wind"
-switch gets stuck on. This component does that in `set_straight_level()` and
-`set_natural_level()`.
+**Mode changes are never echoed back as a `mode` property** — only the resulting
+`natural_level` is. Anything caching the state either has to reflect the mode
+change locally or re-read it, otherwise a "natural wind" switch gets stuck. This
+component does both: `set_mode()` updates the cached value immediately and the
+poll confirms it.
 
 ## What is reported, and when
 
@@ -102,20 +163,23 @@ The periodic/refresh report contains only five properties:
 props power "on" angle_enable "off" fan_level 3 natural_level 0 speed_level 60
 ```
 
-`angle`, `poweroff_time`, `child_lock`, `buzzer` and `led_b` are only ever sent
-as an echo to a matching `set_*`, so their state is unknown after a reboot.
+`mode`, `angle`, `poweroff_time`, `child_lock`, `buzzer`, `led_b`, `speed` and
+`use_time` are never part of it — they have to be polled with `get_prop`.
 
 ## Forcing a full report
 
-The MCU dumps all properties whenever the reported network state *changes*.
-Sending the same value twice does nothing, so a refresh is a transition:
+Polling with `get_prop` is the direct way, but there is also an indirect one:
+the MCU dumps its five reported properties whenever the network state it was
+told about *changes*. Sending the same value twice does nothing, so a refresh
+is a transition:
 
 ```
 down MIIO_net_change local
 down MIIO_net_change cloud
 ```
 
-The dump arrives roughly 6 seconds later.
+The dump arrives roughly 6 seconds later. This is useful on devices where the
+property names for `get_prop` are not known yet.
 
 ## Physical buttons
 

@@ -44,6 +44,18 @@ void ZhimiMiio::setup() {
 
   this->queue_net_change_command_(true);
   this->queue_command("MIIO_mcu_version_req");
+
+  // get_prop reads several properties at once, comma separated and quoted:
+  //   get_prop "power","mode"   ->   result "on","normal"
+  if (!this->poll_properties_.empty()) {
+    this->poll_command_ = "get_prop";
+    for (auto it = this->poll_properties_.cbegin(); it != this->poll_properties_.cend(); ++it)
+      this->poll_command_ += (it == this->poll_properties_.cbegin() ? " \"" : ",\"") + *it + '"';
+
+    this->poll_();
+    if (this->poll_interval_ > 0)
+      this->set_interval("poll", this->poll_interval_, [this] { this->poll_(); });
+  }
 }
 
 #ifdef USE_OTA_STATE_LISTENER
@@ -111,6 +123,12 @@ void ZhimiMiio::dump_config() {
   if (!this->mcu_version_.empty())
     ESP_LOGCONFIG(TAG, "  MCU Version: %s", this->mcu_version_.c_str());
   ESP_LOGCONFIG(TAG, "  OTA net indicator: %s", this->ota_net_indicator_.c_str());
+  if (this->poll_command_.empty()) {
+    ESP_LOGCONFIG(TAG, "  Polling: disabled");
+  } else {
+    ESP_LOGCONFIG(TAG, "  Poll interval: %" PRIu32 " ms", this->poll_interval_);
+    ESP_LOGCONFIG(TAG, "  Poll command: %s", this->poll_command_.c_str());
+  }
   ESP_LOGCONFIG(TAG, "  Properties: %s", this->props_summary().c_str());
 }
 
@@ -147,22 +165,72 @@ void ZhimiMiio::set_local_prop_(const std::string &name, const std::string &valu
   this->props_dirty_ = true;
 }
 
-void ZhimiMiio::set_straight_level(int level) {
-  this->set_number_prop("speed_level", level);
-  this->set_local_prop_("speed_level", to_string(level));
-  this->set_local_prop_("natural_level", "0");
+void ZhimiMiio::set_mode(const std::string &mode) {
+  this->set_string_prop("mode", mode);
+  // the MCU acknowledges with the resulting natural_level but never with the
+  // mode itself, so reflect it locally until the next poll confirms it
+  this->set_local_prop_("mode", mode);
 }
 
-void ZhimiMiio::set_natural_level(int level) {
-  this->set_number_prop("natural_level", level);
-  this->set_local_prop_("natural_level", to_string(level));
+void ZhimiMiio::poll_() {
+  if (this->poll_command_.empty())
+    return;
+  if (this->poll_pending_) {
+    ESP_LOGD(TAG, "Skipping poll, previous one is still in flight");
+    return;
+  }
+  this->poll_pending_ = true;
+  this->queue_command(this->poll_command_);
 }
 
 void ZhimiMiio::request_refresh() {
-  // The MCU dumps all properties whenever the reported network state changes.
+  if (!this->poll_command_.empty()) {
+    this->poll_();
+    return;
+  }
+  // no properties to poll: fall back to a network state transition, which makes
+  // the MCU dump everything it reports on its own
   const char *net = this->get_net_reply_();
   this->queue_command(std::string("MIIO_net_change ") + (std::strcmp(net, NET_LOCAL) == 0 ? NET_CLOUD : NET_LOCAL));
   this->queue_command(std::string("MIIO_net_change ") + net);
+}
+
+// result "on","normal",2,33,0,90,"off","off",0,1,0,"on",451,175940
+// Values come back in the order they were requested; strings are quoted,
+// numbers are bare and unsupported properties come back as "null".
+void ZhimiMiio::parse_get_prop_result_(char *p) {
+  size_t index = 0;
+
+  while (p != nullptr && *p != '\0' && index < this->poll_properties_.size()) {
+    while (*p == ' ' || *p == ',')
+      ++p;
+    if (*p == '\0')
+      break;
+
+    char *value;
+    if (*p == '"') {
+      value = ++p;
+      while (*p != '\0' && *p != '"')
+        ++p;
+    } else {
+      value = p;
+      while (*p != '\0' && *p != ',')
+        ++p;
+    }
+    if (*p != '\0')
+      *p++ = '\0';
+
+    const std::string &name = this->poll_properties_[index++];
+    if (std::strcmp(value, "null") == 0) {
+      ESP_LOGD(TAG, "Property %s is not supported by this device", name.c_str());
+      continue;
+    }
+    this->set_local_prop_(name, value);
+  }
+
+  if (index != this->poll_properties_.size())
+    ESP_LOGW(TAG, "Expected %u values from get_prop, got %u", (unsigned) this->poll_properties_.size(),
+             (unsigned) index);
 }
 
 std::string ZhimiMiio::get_string(const std::string &name, const std::string &default_value) const {
@@ -306,6 +374,7 @@ void ZhimiMiio::process_message_() {
     if (this->command_queue_.empty()) {
       this->send_reply_("down none");
     } else {
+      this->expect_get_prop_result_ = this->command_queue_.front() == this->poll_command_;
       this->send_reply_((std::string("down ") + this->command_queue_.front()).c_str());
       this->command_queue_.pop();
     }
@@ -313,8 +382,15 @@ void ZhimiMiio::process_message_() {
     this->parse_props_(saveptr);
     this->send_reply_("ok");
   } else if (cmd == "result") {
-    // acknowledgement of a down command, e.g. result "ok"
-    ESP_LOGV(TAG, "MCU result: %s", saveptr != nullptr ? saveptr : "");
+    // Answer to the command that was sent last: the values of a get_prop, or a
+    // plain "ok" acknowledging a setter.
+    if (this->expect_get_prop_result_) {
+      this->expect_get_prop_result_ = false;
+      this->poll_pending_ = false;
+      this->parse_get_prop_result_(saveptr);
+    } else {
+      ESP_LOGV(TAG, "MCU result: %s", saveptr != nullptr ? saveptr : "");
+    }
     this->send_reply_("ok");
   } else if (cmd == "net") {
     this->send_reply_(this->get_net_reply_());
@@ -342,6 +418,10 @@ void ZhimiMiio::process_message_() {
     const char *error = strtok_r(nullptr, "\"", &saveptr);
     const char *code = error != nullptr ? strtok_r(nullptr, " ", &saveptr) : nullptr;
     ESP_LOGE(TAG, "MCU command error %s: %s", code != nullptr ? code : "", error != nullptr ? error : "");
+    // an error is the answer to the last command, so a failed poll must not
+    // block every following one
+    this->expect_get_prop_result_ = false;
+    this->poll_pending_ = false;
     this->send_reply_("ok");
   } else if (cmd == "restore") {
     ESP_LOGI(TAG, "Resetting to factory defaults...");

@@ -21,11 +21,8 @@ void ZhimiFan::control(const fan::FanCall &call) {
     int speed = clamp(*call.get_speed(), 1, 100);
     // While natural wind is running the level lives in natural_level; writing
     // speed_level would silently drop the device back to straight wind.
-    if (this->parent_->get_number("natural_level", 0) > 0) {
-      this->parent_->set_natural_level(speed);
-    } else {
-      this->parent_->set_straight_level(speed);
-    }
+    bool natural = this->parent_->get_string("mode") == "natural";
+    this->parent_->set_number_prop(natural ? "natural_level" : "speed_level", speed);
   }
 
   // The MCU echoes every accepted change back as a props message, which is what
@@ -42,8 +39,8 @@ void ZhimiFan::control(const fan::FanCall &call) {
 void ZhimiFan::on_props_update(ZhimiMiio *hub) {
   bool state = hub->get_bool("power", this->state);
   bool oscillating = hub->get_bool("angle_enable", this->oscillating);
-  int natural_level = hub->get_number("natural_level", 0);
-  int speed = natural_level > 0 ? natural_level : hub->get_number("speed_level", this->speed);
+  bool natural = hub->get_string("mode") == "natural";
+  int speed = hub->get_number(natural ? "natural_level" : "speed_level", this->speed);
   speed = clamp(speed, 1, 100);
 
   if (state == this->state && oscillating == this->oscillating && speed == this->speed)
