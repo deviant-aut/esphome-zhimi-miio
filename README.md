@@ -170,6 +170,43 @@ Everything else (natural wind, gear 1–4, oscillation angle, child lock, buzzer
 LED brightness, off delay, fan RPM, operating hours) is done with standard
 `template` entities reading from the polled state — see the example YAML.
 
+## Bringing the Bluetooth remote back
+
+The remote that comes with the fan **stops working when you flash ESPHome**, and
+this catches people out: the MCU knows nothing about it, so nothing on the UART
+side explains where it went. It was handled by the stock firmware on the ESP32
+module you just overwrote.
+
+You can have it back, and you do not need to redo the pairing. The remote is a
+MiBeacon broadcaster and it sends its key presses **unencrypted**, so the ESP32
+radio — the same one, now running ESPHome — only has to listen:
+
+```yaml
+esp32_ble_tracker:
+  on_ble_service_data_advertise:
+    - service_uuid: FE95
+      mac_address: AA:BB:CC:DD:EE:FF
+      then:
+        - lambda: |-  # parse object 0x1001, then drive the hub
+```
+
+The complete decoder, including the frame counter check that both debounces the
+repeated broadcasts and blocks replays, is in
+[`zhimi.fan.za3.yaml`](zhimi.fan.za3.yaml). The frame layout, the key map and
+how to find your own remote's address are in
+[docs/PROTOCOL.md](docs/PROTOCOL.md#the-bluetooth-remote).
+
+Two things worth knowing before you build on this:
+
+- The remote keeps its **own** gear counter and transmits the absolute gear, so
+  it drifts out of step with the fan whenever the speed is changed anywhere
+  else. That is stock behaviour, not something this component introduces.
+- There is **no way back to the remote**. It sleeps between key presses and
+  never listens, so state cannot be pushed to it.
+
+Enabling BLE costs roughly 600 KB of flash. It still fits comfortably on the
+4 MB module — the full example config builds to 73 % of the app partition.
+
 ## Switching wind mode without a network
 
 The MCU reports physical key presses, so multi-press detection can run entirely
@@ -186,6 +223,12 @@ Verified on `zhimi.fan.za3` hardware (see [Tested devices](#tested-devices)):
 power, stepless speed, gear 1–4, natural wind, oscillation and angle, physical
 key events, the double-press toggle, and reading every property back including
 fan RPM and operating hours.
+
+The Bluetooth remote is verified as well — every key and every value in the
+[key map](docs/PROTOCOL.md#key-map) was confirmed against a labelled press
+sequence, the fan was then driven from the remote for 25 consecutive presses
+without a misread, and the "switch on, then set the gear" sequence was checked
+against the MCU's error replies to make sure the second command is not rejected.
 
 Known gaps:
 
