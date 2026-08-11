@@ -88,6 +88,103 @@ logger:
   # Important: the MCU owns UART0, logging to it corrupts the protocol
   baud_rate: 0
 
+# The Bluetooth remote that ships with the fan.
+#
+# It was handled by the stock firmware on this very ESP32, not by the MCU, so
+# flashing ESPHome kills it. It does not have to stay dead: the remote is a
+# plain MiBeacon broadcaster and its key presses are NOT encrypted, so listening
+# is enough. No pairing, no bind key. See docs/PROTOCOL.md#the-bluetooth-remote.
+#
+# Put your own remote's address below. To find it, flash once with this instead
+# and press a key while watching the log - the remote shows up as ZHIMI-FAN with
+# service data under UUID 0xFE95:
+#
+#   on_ble_advertise:
+#     - then:
+#         - lambda: |-
+#             for (auto &sd : x.get_service_datas())
+#               ESP_LOGI("scan", "%s %s %s", x.address_str().c_str(),
+#                        sd.uuid.to_string().c_str(), format_hex_pretty(sd.data).c_str());
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 320ms
+    window: 300ms
+    active: false      # advertisements only, no scan request needed
+    continuous: true
+  on_ble_service_data_advertise:
+    - service_uuid: FE95
+      mac_address: AA:BB:CC:DD:EE:FF    # <- your remote
+      then:
+        - lambda: |-
+            if (x.size() < 14)
+              return;
+
+            const uint16_t frame_control = x[0] | (x[1] << 8);
+            if (frame_control & 0x0008) {
+              ESP_LOGW("remote", "frame is encrypted, we have no bind key");
+              return;
+            }
+            if (!(frame_control & 0x0040))
+              return;  // carries no event
+
+            size_t pos = 5;
+            if (frame_control & 0x0010)
+              pos += 6;  // embedded MAC
+            if (frame_control & 0x0020)
+              pos += 1;  // capability byte
+            if (pos + 3 > x.size())
+              return;
+
+            const uint16_t object_id = x[pos] | (x[pos + 1] << 8);
+            const uint8_t object_len = x[pos + 2];
+            if (object_id != 0x1001 || object_len != 3 || pos + 3 + object_len > x.size())
+              return;  // 0x0002 is the pairing request, ignore it
+
+            // One press is broadcast several times and can only be told apart by
+            // the frame counter. It doubles as replay protection.
+            static uint8_t last_counter = 0;
+            static bool have_counter = false;
+            const uint8_t counter = x[4];
+            if (have_counter && counter == last_counter)
+              return;
+            last_counter = counter;
+            have_counter = true;
+
+            const uint8_t button = x[pos + 3];
+            const uint8_t value = x[pos + 5];
+
+            if (button == 0x11 && (value & 0xF0) == 0x10) {
+              const int level = value & 0x0F;
+              if (level < 1 || level > 4)
+                return;
+              // While off the MCU rejects every set command with
+              // device_poweroff -6011, so power has to go out first and the gear
+              // after it. The command queue preserves that order.
+              if (!id(fan_hub).get_bool("power")) {
+                ESP_LOGI("remote", "top key short -> on, then gear %d", level);
+                id(fan_hub).set_string_prop("power", "on");
+              } else {
+                ESP_LOGI("remote", "top key short -> gear %d", level);
+              }
+              id(fan_hub).set_number_prop("fan_level", level);
+            } else if (button == 0x11 && value == 0x02) {
+              // Deliberately not a toggle: a long press always turns the fan
+              // off, so it can be relied on without looking at the device.
+              // Turning on is what the short press is for.
+              ESP_LOGI("remote", "top key long -> off");
+              id(fan_hub).set_string_prop("power", "off");
+            } else if (button == 0x12 && value == 0x00) {
+              const bool oscillating = id(fan_hub).get_bool("angle_enable");
+              ESP_LOGI("remote", "bottom key short -> oscillation %s", oscillating ? "off" : "on");
+              id(fan_hub).set_string_prop("angle_enable", oscillating ? "off" : "on");
+            } else if (button == 0x12 && value == 0x02) {
+              const bool natural = id(fan_hub).get_string("mode") == "natural";
+              ESP_LOGI("remote", "bottom key long -> %s", natural ? "normal" : "natural");
+              id(fan_hub).set_mode(natural ? "normal" : "natural");
+            } else {
+              ESP_LOGW("remote", "unknown key code %02X %02X", button, value);
+            }
+
 # The MCU asks for the wall clock time (used by its off timer). Optional.
 time:
   - platform: homeassistant

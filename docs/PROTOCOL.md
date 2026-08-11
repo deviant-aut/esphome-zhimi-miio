@@ -204,3 +204,75 @@ double press were around 200-230 ms, so a window of 900 ms is comfortable. A
 double press on the `angle` key is particularly convenient because the two
 oscillation toggles cancel out, leaving the swing state untouched — this
 component uses it to toggle the wind mode without any network involved.
+
+## The Bluetooth remote
+
+The remote that ships with the fan does not talk to the MCU at all. It was
+handled by the stock firmware **on the ESP32 WiFi module**, which is why it
+stops working the moment ESPHome is flashed — nothing on the UART side ever
+sees it.
+
+It can be brought back without touching the pairing, because it is a plain
+MiBeacon broadcaster and its payload is not encrypted.
+
+### What it sends
+
+BLE advertisements with service data under UUID `0xFE95`, advertised name
+`ZHIMI-FAN`:
+
+| Offset | Field |
+|---|---|
+| `0..1` | frame control, little endian |
+| `2..3` | product id, little endian (`0x0423` on this remote) |
+| `4` | frame counter |
+| `5..10` | MAC address, reversed (present when frame control bit 4 is set) |
+| then | object id (LE) + length + data |
+
+Relevant frame control bits: `0x0001` factory new, `0x0008` **encrypted**,
+`0x0010` MAC embedded, `0x0020` capability byte follows, `0x0040` carries an
+event. The observed value is `0x2051` — factory new, MAC, event, version 2, and
+crucially **the encryption bit is clear**.
+
+The frame counter increments once per key press. A single press is broadcast
+several times with the same counter, so deduplicating on it is what turns the
+radio traffic into discrete events — and it rejects replayed frames for free.
+
+### Objects
+
+| Object | Meaning |
+|---|---|
+| `0x0002` | pairing request, payload `01 10` = "pair object `0x1001`" |
+| `0x1001` | key press, three data bytes `<key> 00 <value>` |
+
+An unpaired remote sends the pairing request for 30 s in 2 s intervals and then
+goes quiet. **This does not have to be answered.** Pairing exists to register
+the device in Mi Home and to hand out a bind key for encrypted payloads; with
+the encryption bit clear there is nothing to decrypt, and a paired remote might
+well start encrypting, which would make things worse.
+
+### Key map
+
+The remote has two keys and keeps its own gear counter, so a short press on the
+top key transmits the *absolute* gear it has counted up to, not an increment:
+
+| Data | Key | Meaning |
+|---|---|---|
+| `11 00 11` … `11 00 14` | top | short press, gear 1–4 |
+| `11 00 02` | top | long press, power |
+| `12 00 00` | bottom | short press, oscillation |
+| `12 00 02` | bottom | long press, wind mode |
+
+Note that a long press is a distinct value here (`0x02`), unlike the physical
+keys on the fan itself where it cannot be told apart at all.
+
+### Range
+
+The module's antenna sits inside the fan's base. Close to the device (RSSI −46)
+reception was gap free over dozens of presses; at −97 frames were dropped and
+counter values went missing. Expect same-room range, not whole-flat range.
+
+### No way back
+
+The remote transmits only while a key is held and sleeps in between — there is
+no window in which it listens. Feeding state back to it, for example to light an
+LED for the current wind mode, is not possible.
