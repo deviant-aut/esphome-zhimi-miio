@@ -49,7 +49,7 @@ down set_power "off"      ->  ok
 ```
 
 Error codes seen: `-5000 method not found`, `-5001 invalid arg`,
-`-6007 device_busy`.
+`-6007 device_busy`, `-6011 device_poweroff`.
 
 MIoT-style commands are rejected outright, which is what makes these devices
 incompatible with MIoT components:
@@ -68,7 +68,7 @@ down get_properties 2 1 2 2 ...   ->  error "method not found" -5000
 | `set_natural_level` | `0..100` | `0` = normal wind, `>0` = natural wind at that level |
 | `set_fan_level` | `1..4` | gear; acts on whichever level is currently active |
 | `set_angle_enable` | `"on"` / `"off"` | oscillation |
-| `set_angle` | `30` / `60` / `90` / `120` | also enables oscillation |
+| `set_angle` | `0..120` | stepless in 1° increments; also enables oscillation |
 | `set_move` | `"left"` / `"right"` | only while oscillation is off, else `-6007 device_busy` |
 | `set_child_lock` | `"on"` / `"off"` | |
 | `set_buzzer` | `0` / `1` | numeric, `"on"` gives `-5001` |
@@ -76,7 +76,14 @@ down get_properties 2 1 2 2 ...   ->  error "method not found" -5000
 | `set_poweroff_time` | seconds | counts down; verified 600 → 499 in 105 s |
 
 Every setter is rejected with `error "device_poweroff" -6011` while the device
-is switched off, so `set_power "on"` has to come first.
+is switched off, so `set_power "on"` has to come first. The power check runs
+before argument validation: even `set_angle 999` returns `-6011` while the fan
+is off, so argument ranges can only be probed while it is on.
+
+The oscillation angle is not limited to the four presets exposed by Xiaomi's
+UI. Values `0`, `1`, `7`, `45`, `100`, `119` and `120` were accepted and read
+back exactly; `121` was rejected with `-5001 invalid arg`. Sending `set_angle`
+also changes `angle_enable` to `"on"` if oscillation was off.
 
 ## Reading properties
 
