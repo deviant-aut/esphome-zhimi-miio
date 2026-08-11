@@ -224,16 +224,13 @@ power, stepless speed, gear 1–4, natural wind, oscillation and angle, physical
 key events, the double-press toggle, and reading every property back including
 fan RPM and operating hours.
 
-The Bluetooth remote decoding is verified as well — every key and every value in
-the [key map](docs/PROTOCOL.md#key-map) was confirmed against a labelled press
-sequence, and the fan was then driven from the remote for 25 consecutive presses
-without a misread.
+The Bluetooth remote is verified as well — every key and every value in the
+[key map](docs/PROTOCOL.md#key-map) was confirmed against a labelled press
+sequence, the fan was then driven from the remote for 25 consecutive presses
+without a misread, and the "switch on, then set the gear" sequence was checked
+against the MCU's error replies to make sure the second command is not rejected.
 
 Known gaps:
-
-- The example maps a short press to "switch on if off, then set the gear". The
-  decoding behind it is verified, but that particular two-command sequence has
-  not been re-confirmed on hardware since it was changed from a plain toggle.
 
 - The AP fallback path is reasoned from the ESPHome sources, not measured — the
   test would have meant flashing a config with an unreachable SSID.

@@ -173,6 +173,11 @@ esp32_ble_tracker:
               // Turning on is what the short press is for.
               ESP_LOGI("remote", "top key long -> off");
               id(fan_hub).set_string_prop("power", "off");
+            } else if (button == 0x12 && !id(fan_hub).get_bool("power")) {
+              // Same as the gear keys: while off the MCU answers every set
+              // command with device_poweroff -6011. Only the top key turns the
+              // fan on, so there is nothing to do here but drop the press.
+              ESP_LOGI("remote", "bottom key ignored, fan is off");
             } else if (button == 0x12 && value == 0x00) {
               const bool oscillating = id(fan_hub).get_bool("angle_enable");
               ESP_LOGI("remote", "bottom key short -> oscillation %s", oscillating ? "off" : "on");
