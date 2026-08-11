@@ -166,9 +166,10 @@ fan:
 On/off, stepless speed 1–100 and oscillation. While natural wind is active the
 speed is written to `natural_level`, otherwise to `speed_level`.
 
-Everything else (natural wind, gear 1–4, oscillation angle, child lock, buzzer,
-LED brightness, off delay, fan RPM, operating hours) is done with standard
-`template` entities reading from the polled state — see the example YAML.
+Everything else (natural wind, gear 1–4, stepless oscillation angle 0–120°,
+child lock, buzzer, LED brightness, off delay, fan RPM, operating hours) is
+done with standard `template` entities reading from the polled state — see the
+example YAML.
 
 ## Bringing the Bluetooth remote back
 
@@ -220,9 +221,9 @@ presses. See [docs/PROTOCOL.md](docs/PROTOCOL.md#physical-buttons).
 ## Status
 
 Verified on `zhimi.fan.za3` hardware (see [Tested devices](#tested-devices)):
-power, stepless speed, gear 1–4, natural wind, oscillation and angle, physical
-key events, the double-press toggle, and reading every property back including
-fan RPM and operating hours.
+power, stepless speed, gear 1–4, natural wind, oscillation and its full 0–120°
+angle range, physical key events, the double-press toggle, and reading every
+property back including fan RPM and operating hours.
 
 The Bluetooth remote is verified as well — every key and every value in the
 [key map](docs/PROTOCOL.md#key-map) was confirmed against a labelled press

@@ -310,6 +310,23 @@ number:
       - lambda: 'id(fan_hub).set_number_prop("fan_level", (int) x);'
 
   - platform: template
+    name: "Oscillation Angle"
+    icon: mdi:angle-obtuse
+    unit_of_measurement: °
+    update_interval: 2s
+    min_value: 0
+    max_value: 120
+    step: 1
+    # Every integer in this range is accepted. Setting an angle also enables
+    # oscillation; 30/60/90/120 are only the presets offered by Xiaomi's UI.
+    lambda: |-
+      if (!id(fan_hub).has_prop("angle"))
+        return {};
+      return (float) id(fan_hub).get_number("angle", 0);
+    set_action:
+      - lambda: 'id(fan_hub).set_number_prop("angle", (int) x);'
+
+  - platform: template
     name: "Off Delay"
     icon: mdi:clock-outline
     entity_category: config
@@ -325,18 +342,6 @@ number:
       - lambda: 'id(fan_hub).set_number_prop("poweroff_time", (int) (x * 60));'
 
 select:
-  - platform: template
-    name: "Oscillation Angle"
-    icon: mdi:angle-obtuse
-    update_interval: 2s
-    options: ["30", "60", "90", "120"]
-    lambda: |-
-      if (!id(fan_hub).has_prop("angle"))
-        return {};
-      return id(fan_hub).get_string("angle");
-    set_action:
-      - lambda: 'id(fan_hub).set_number_prop("angle", atoi(x.c_str()));'
-
   - platform: template
     name: "LED Brightness"
     icon: mdi:brightness-6
