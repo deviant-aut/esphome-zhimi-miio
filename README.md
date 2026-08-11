@@ -220,9 +220,10 @@ presses. See [docs/PROTOCOL.md](docs/PROTOCOL.md#physical-buttons).
 ## Status
 
 Verified on `zhimi.fan.za3` hardware (see [Tested devices](#tested-devices)):
-power, stepless speed, gear 1–4, natural wind, oscillation and angle, physical
-key events, the double-press toggle, and reading every property back including
-fan RPM and operating hours.
+power, stepless speed, gear 1–4, natural wind, oscillation and its angle
+(stepless 0–120°, not just the four values the app offers), physical key events,
+the double-press toggle, and reading every property back including fan RPM and
+operating hours.
 
 The Bluetooth remote is verified as well — every key and every value in the
 [key map](docs/PROTOCOL.md#key-map) was confirmed against a labelled press

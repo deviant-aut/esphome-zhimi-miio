@@ -68,15 +68,22 @@ down get_properties 2 1 2 2 ...   ->  error "method not found" -5000
 | `set_natural_level` | `0..100` | `0` = normal wind, `>0` = natural wind at that level |
 | `set_fan_level` | `1..4` | gear; acts on whichever level is currently active |
 | `set_angle_enable` | `"on"` / `"off"` | oscillation |
-| `set_angle` | `30` / `60` / `90` / `120` | also enables oscillation |
+| `set_angle` | `0..120` | stepless, 1° steps; also enables oscillation |
 | `set_move` | `"left"` / `"right"` | only while oscillation is off, else `-6007 device_busy` |
 | `set_child_lock` | `"on"` / `"off"` | |
 | `set_buzzer` | `0` / `1` | numeric, `"on"` gives `-5001` |
 | `set_led_b` | `0` / `1` / `2` | bright / dim / off |
 | `set_poweroff_time` | seconds | counts down; verified 600 → 499 in 105 s |
 
+The angle is the one place where the MIoT spec is more accurate than the app:
+it advertises `0..120` in steps of 1, and the MCU really does accept every one
+of them. The four values the app and the physical key offer are a UI convention,
+not a device limit. `121` is refused with `-5001`.
+
 Every setter is rejected with `error "device_poweroff" -6011` while the device
-is switched off, so `set_power "on"` has to come first.
+is switched off, so `set_power "on"` has to come first. Note that this check
+runs **before** the argument is validated — `set_angle 999` on a switched-off
+fan also answers `-6011`, so arguments cannot be probed while it is off.
 
 ## Reading properties
 
